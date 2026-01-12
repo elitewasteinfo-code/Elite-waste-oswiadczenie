@@ -120,7 +120,7 @@ if st.button("🖨️ Generuj Oświadczenie", type="primary"):
 
     try:
         # Wczytaj Twój szablon
-        doc = DocxTemplate("Oświadczenie - wpis wzor.docx")
+        doc = DocxTemplate("oswiadczenie")
         doc.render(context)
         
         # Nazwa pliku wyjściowego
