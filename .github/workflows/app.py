@@ -2,26 +2,26 @@ import streamlit as st
 from docxtpl import DocxTemplate
 from gusregon import GUS
 import datetime
+import os
 
 # --- KONFIGURACJA ---
-# Twój klucz API GUS (wersja produkcyjna)
+# Twój klucz API GUS
 API_KEY = 'd75dd615254847b4b9c9'
 
 def pobierz_dane_z_gus(nip_input):
     """
-    Łączy się z GUS używając biblioteki gusregon.
+    Łączy się z GUS i pobiera dane firmy.
     """
     try:
         gus = GUS(api_key=API_KEY)
-        # Usuwamy ewentualne kreski z NIPu
-        clean_nip = nip_input.replace('-', '').strip()
+        clean_nip = nip_input.replace('-', '').replace(' ', '').strip()
         
         dane = gus.search(nip=clean_nip)
         
         if not dane:
             return None
             
-        # Formatowanie adresu (GUS oddaje ulice i numer osobno)
+        # Formatowanie adresu
         ulica = dane.get('ulica', '')
         nr_domu = dane.get('nrNieruchomosci', '')
         nr_lokalu = dane.get('nrLokalu', '')
@@ -33,8 +33,8 @@ def pobierz_dane_z_gus(nip_input):
             adres_full += f"/{nr_lokalu}"
         
         adres_caly_z_kodem = f"{miejscowosc}, {adres_full}, {kod}"
-
-        # Data rozpoczęcia - czasem jest w dataRozpoczeciaDzialalnosci, czasem w dataPowstania
+        
+        # Data rozpoczęcia
         start_date = dane.get('dataRozpoczeciaDzialalnosci') or dane.get('dataPowstania', '')
 
         return {
@@ -49,16 +49,14 @@ def pobierz_dane_z_gus(nip_input):
         st.error(f"Błąd połączenia z GUS: {str(e)}")
         return None
 
-# --- INTERFEJS APLIKACJI ---
+# --- UI APLIKACJI ---
 st.set_page_config(page_title="Generator BDO - Elite Waste", layout="wide")
-st.title("📄 Generator Oświadczeń BDO (API GUS)")
+st.title("📄 Generator Oświadczeń BDO (Elite Waste)")
 
-# --- SEKCJA 1: DANE KLIENTA ---
+# --- SEKCJA 1: DANE ---
 st.header("1. Dane Podmiotu")
-
 col1, col2 = st.columns(2)
 
-# Stan sesji dla danych z GUS
 if 'gus_data' not in st.session_state:
     st.session_state['gus_data'] = {}
 
@@ -67,17 +65,16 @@ with col1:
     
     if st.button("🔍 Pobierz dane z GUS"):
         if len(nip_input) >= 10:
-            with st.spinner('Łączę z bazą GUS...'):
+            with st.spinner('Pobieram dane...'):
                 wynik = pobierz_dane_z_gus(nip_input)
                 if wynik:
                     st.session_state['gus_data'] = wynik
-                    st.success("Dane pobrane pomyślnie!")
+                    st.success("Dane pobrane!")
                 else:
-                    st.error("Nie znaleziono firmy lub błąd API.")
+                    st.error("Nie znaleziono firmy lub błąd.")
         else:
             st.warning("Wpisz poprawny NIP.")
 
-    # Dane ręczne
     imie_nazwisko = st.text_input("Imię i Nazwisko (Reprezentant):")
     telefon = st.text_input("Telefon kontaktowy:", value="+48 ")
 
@@ -85,40 +82,38 @@ with col2:
     dane = st.session_state['gus_data']
     
     email = st.text_input("Adres e-mail:", value="biuro@elitewaste.pl")
-    
-    # Pola wypełniane automatycznie
     nazwa_firmy = st.text_input("Nazwa Firmy:", value=dane.get('nazwa', ''))
     adres_firmy = st.text_input("Adres (Ulica, Kod, Miasto):", value=dane.get('adres_caly', ''))
     miejscowosc_dok = st.text_input("Miejscowość (nagłówek):", value=dane.get('miejscowosc', ''))
     regon = st.text_input("REGON:", value=dane.get('regon', ''))
     pkd = st.text_input("Wiodące PKD:", value=dane.get('pkd', ''))
-    data_rozpoczecia = st.text_input("Data rozpoczęcia dział.:", value=dane.get('data_start', ''))
+    data_rozpoczecia = st.text_input("Data rozpoczęcia:", value=dane.get('data_start', ''))
 
-# --- SEKCJA 2: TABELA BDO ---
+# --- SEKCJA 2: CHECKBOXY ---
 st.divider()
-st.header("2. Zakres Działalności (Tabela)")
-st.info("ℹ️ Domyślnie wszystko na NIE. Zaznacz to, co na TAK.")
+st.header("2. Zakres Działalności")
+st.info("ℹ️ Zaznacz tylko to, co ma być na TAK. Reszta będzie na NIE.")
 
 t_col1, t_col2 = st.columns(2)
 vars_bdo = {}
 
 with t_col1:
-    vars_bdo['bdo_wytworca'] = st.checkbox("Wytwórca odpadów (Ewidencja)", value=False)
+    vars_bdo['bdo_wytworca'] = st.checkbox("Wytwórca odpadów", value=False)
     vars_bdo['bdo_transport'] = st.checkbox("Transportujący odpady", value=False)
     vars_bdo['bdo_kody'] = st.checkbox("Deklarowane kody odpadów", value=False)
-    vars_bdo['bdo_obszar'] = st.checkbox("Obszar działalności (Ogólny)", value=False)
+    vars_bdo['bdo_obszar'] = st.checkbox("Obszar działalności", value=False)
     vars_bdo['bdo_jakosc'] = st.checkbox("Wdrożony system jakości", value=False)
-    vars_bdo['bdo_srodowisko'] = st.checkbox("Wdrożony system zarz. środowiskowego", value=False)
-    vars_bdo['bdo_oplata'] = st.checkbox("Ustawa o obow. przedsiębiorc. (Opłata)", value=False)
+    vars_bdo['bdo_srodowisko'] = st.checkbox("System środowiskowy", value=False)
+    vars_bdo['bdo_oplata'] = st.checkbox("Opłata produktowa", value=False)
     vars_bdo['bdo_pojazdy'] = st.checkbox("Recykling pojazdów", value=False)
 
 with t_col2:
     vars_bdo['bdo_sprzedawca'] = st.checkbox("Sprzedawca odpadów", value=False)
     vars_bdo['bdo_posrednik'] = st.checkbox("Pośrednik w obrocie", value=False)
-    vars_bdo['bdo_elektro'] = st.checkbox("Zużyty sprzęt elektr./elektroniczny", value=False)
+    vars_bdo['bdo_elektro'] = st.checkbox("Zużyty sprzęt elektro", value=False)
     vars_bdo['bdo_baterie'] = st.checkbox("Baterie i akumulatory", value=False)
     vars_bdo['bdo_opakowania'] = st.checkbox("Gosp. opakowaniami", value=False)
-    vars_bdo['bdo_zwolniony'] = st.checkbox("Posiadacz zwolniony z zezwolenia", value=False)
+    vars_bdo['bdo_zwolniony'] = st.checkbox("Zwolniony z zezwolenia", value=False)
     vars_bdo['bdo_urzad'] = st.checkbox("Wpis z urzędu (Art. 51)", value=False)
     vars_bdo['bdo_statki'] = st.checkbox("Recykling statków", value=False)
 
@@ -128,7 +123,7 @@ if st.button("🖨️ Generuj Dokument WORD", type="primary"):
     if not nazwa_firmy:
         st.error("Uzupełnij nazwę firmy!")
     else:
-        # Context
+        # Kontekst danych
         context = {
             'miejscowosc': miejscowosc_dok,
             'data': datetime.date.today().strftime("%d.%m.%Y"),
@@ -148,25 +143,37 @@ if st.button("🖨️ Generuj Dokument WORD", type="primary"):
             context[key] = "TAK" if value else "NIE"
 
         try:
-            # --- TU BYŁ BŁĄD, POPRAWIONE PONIŻEJ ---
-            doc = DocxTemplate("oswiadczenie.docx") 
-            # ---------------------------------------
+            # --- FIX ŚCIEŻKI DO PLIKU ---
+            # 1. Pobierz folder, w którym jest ten skrypt
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            # 2. Sklej folder z nazwą pliku
+            template_path = os.path.join(current_dir, "oswiadczenie.docx")
             
+            # Sprawdzenie debugowe
+            if not os.path.exists(template_path):
+                st.error(f"Nie widzę pliku! Szukam tutaj: {template_path}")
+                st.text(f"Pliki w folderze: {os.listdir(current_dir)}")
+                st.stop()
+                
+            doc = DocxTemplate(template_path)
             doc.render(context)
             
-            # Bezpieczna nazwa pliku
-            safe_name = nazwa_firmy.replace('"', '').replace('/', '-').strip()[:30]
-            out_name = f"Oswiadczenie_{safe_name}.docx"
-            doc.save(out_name)
+            # Zapis pliku wynikowego
+            safe_name = nazwa_firmy.replace('"', '').replace('/', '-').strip()[:20]
+            out_filename = f"Oswiadczenie_{safe_name}.docx"
+            out_path = os.path.join(current_dir, out_filename)
             
-            with open(out_name, "rb") as f:
+            doc.save(out_path)
+            
+            with open(out_path, "rb") as f:
                 st.download_button(
-                    label="📥 POBIERZ GOTOWY PLIK",
+                    label="📥 POBIERZ PLIK",
                     data=f,
-                    file_name=out_name,
+                    file_name=out_filename,
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
-            st.success(f"Dokument gotowy dla: {nazwa_firmy}")
+            
+            st.success(f"Gotowe! Plik wygenerowany dla: {nazwa_firmy}")
             
         except Exception as e:
-            st.error(f"Błąd: {e}")
+            st.error(f"Wystąpił błąd: {e}")
