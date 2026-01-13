@@ -8,7 +8,7 @@ import os
 API_KEY = 'd75dd615254847b4b9c9'
 
 def safe_get(d, keys, default=''):
-    """Szuka wartości pod różnymi kluczami."""
+    """Szuka wartości pod różnymi kluczami (dla bezpieczeństwa)."""
     for k in keys:
         if k in d and d[k]: return d[k]
         if k.lower() in d and d[k.lower()]: return d[k.lower()]
@@ -19,7 +19,7 @@ def pobierz_dane_z_gus(nip_input):
         gus = GUS(api_key=API_KEY)
         clean_nip = nip_input.replace('-', '').replace(' ', '').strip()
         
-        # SZYBKIE STRZAŁY (Bez szukania głębokich raportów)
+        # Pobieranie danych
         dane = gus.search(nip=clean_nip)
         
         if not dane:
@@ -27,7 +27,7 @@ def pobierz_dane_z_gus(nip_input):
 
         raw_debug = dane.copy()
 
-        # --- PARSOWANIE ---
+        # --- PARSOWANIE DANYCH ---
         nazwa = safe_get(dane, ['nazwa', 'Nazwa'])
         miejscowosc = safe_get(dane, ['adsiedzmiejscowosc_nazwa', 'miejscowosc', 'Miejscowosc'])
         ulica_raw = safe_get(dane, ['adsiedzulica_nazwa', 'ulica', 'Ulica'])
@@ -68,11 +68,11 @@ def pobierz_dane_z_gus(nip_input):
     except Exception as e:
         return None, str(e)
 
-# --- UI APLIKACJI ---
+# --- INTERFEJS APLIKACJI ---
 st.set_page_config(page_title="Generator BDO - Elite Waste", layout="wide")
 st.title("📄 Generator Oświadczeń BDO (Elite Waste)")
 
-# --- SEKCJA 1 ---
+# --- SEKCJA 1: DANE ---
 st.header("1. Dane Podmiotu")
 col1, col2 = st.columns(2)
 
@@ -101,18 +101,19 @@ with col1:
 with col2:
     dane = st.session_state['gus_data']
     
-    email = st.text_input("Adres e-mail:", value="biuro@elitewaste.pl")
+    # --- POPRAWKA: PUSTY EMAIL ---
+    email = st.text_input("Adres e-mail (Klienta):", value="") 
+    
     nazwa_firmy = st.text_input("Nazwa Firmy:", value=dane.get('nazwa', ''))
     adres_firmy = st.text_input("Adres:", value=dane.get('adres_caly', ''))
     miejscowosc_dok = st.text_input("Miejscowość:", value=dane.get('miejscowosc', ''))
     regon = st.text_input("REGON:", value=dane.get('regon', ''))
-    # PKD USUNIĘTE
     data_rozpoczecia = st.text_input("Data rozpoczęcia:", value=dane.get('data_start', ''))
 
-# --- SEKCJA 2 ---
+# --- SEKCJA 2: TABELA ---
 st.divider()
 st.header("2. Zakres Działalności")
-st.info("ℹ️ Zaznacz tylko TAK.")
+st.info("ℹ️ Zaznacz tylko TAK (reszta domyślnie NIE).")
 
 t_col1, t_col2 = st.columns(2)
 vars_bdo = {}
@@ -143,6 +144,7 @@ if st.button("🖨️ Generuj Dokument WORD", type="primary"):
     if not nazwa_firmy:
         st.error("Uzupełnij nazwę firmy!")
     else:
+        # Context do Worda
         context = {
             'miejscowosc': miejscowosc_dok,
             'data': datetime.date.today().strftime("%d.%m.%Y"),
@@ -153,8 +155,8 @@ if st.button("🖨️ Generuj Dokument WORD", type="primary"):
             'imie_nazwisko': imie_nazwisko,
             'email': email,
             'telefon': telefon,
-            # PKD USUNIĘTE Z CONTEXTU
             'data_rozpoczecia': data_rozpoczecia,
+            # Brak PKD w context
         }
         
         for key, value in vars_bdo.items():
