@@ -19,7 +19,7 @@ def pobierz_dane_z_gus(nip_input):
         gus = GUS(api_key=API_KEY)
         clean_nip = nip_input.replace('-', '').replace(' ', '').strip()
         
-        # KROK 1: Wyszukiwanie podstawowe (tu jest adres, nazwa, ale często brak PKD dla JDG)
+        # KROK 1: Podstawowe dane (Adresy, Nazwy)
         dane = gus.search(nip=clean_nip)
         
         if not dane:
@@ -27,53 +27,67 @@ def pobierz_dane_z_gus(nip_input):
 
         raw_debug = dane.copy()
 
-        # --- WYCIĄGANIE DANYCH PODSTAWOWYCH ---
+        # --- PARSOWANIE PODSTAWOWE ---
         nazwa = safe_get(dane, ['nazwa', 'Nazwa'])
-        miejscowosc = safe_get(dane, ['adsiedzmiejscowosc_nazwa', 'miejscowosc', 'Miejscowosc', 'adsiedzmiejscowosc_symbol'])
+        miejscowosc = safe_get(dane, ['adsiedzmiejscowosc_nazwa', 'miejscowosc', 'Miejscowosc'])
         ulica_raw = safe_get(dane, ['adsiedzulica_nazwa', 'ulica', 'Ulica'])
         nr_domu = safe_get(dane, ['adsiedznumerieruchomosci', 'nrNieruchomosci', 'nr_domu'])
         nr_lokalu = safe_get(dane, ['adsiedznumerlokalu', 'nrLokalu', 'nr_lokalu'])
         kod = safe_get(dane, ['adsiedzkodpocztowy', 'kodPocztowy', 'KodPocztowy'])
         regon = safe_get(dane, ['regon9', 'regon14', 'regon', 'Regon'])
-        typ_jednostki = safe_get(dane, ['typ', 'Typ']) # F - fizyczna, P - prawna
+        typ = safe_get(dane, ['typ', 'Typ'])
 
-        # Data rozpoczęcia
         data_start = safe_get(dane, [
             'datarozpoczeciadzialalnosci',
             'dataRozpoczeciaDzialalnosci',
-            'dataPowstania',
-            'datawpisudorejestruewidencji'
+            'dataPowstania'
         ])
 
-        # PKD z pierwszego strzału (często puste dla JDG)
-        pkd = safe_get(dane, ['silos_pkd', 'kod_pkd', 'przewazajace_pkd'])
+        # Próba PKD z podstawowego widoku
+        pkd = safe_get(dane, ['silos_pkd', 'kod_pkd'])
         if isinstance(pkd, dict): pkd = pkd.get('kod', '')
 
-        # --- KROK 2: BRUTAL FORCE NA PKD (Jeśli puste) ---
-        # Jeśli nie mamy PKD, a mamy REGON, pobieramy pełny raport
+        # --- KROK 2: BRUTAL FORCE CEIDG (Dla JDG) ---
+        # Jeśli nie ma PKD i mamy REGON, strzelamy do raportu szczegółowego
         if not pkd and regon:
             try:
-                full_report = None
-                # Próbujemy zgadnąć typ raportu na podstawie typu jednostki
-                if typ_jednostki == 'F':
-                    # Raport dla JDG (CEIDG)
-                    full_report = gus.get_full_report(regon, 'BIR11OsFizycznaDzialalnoscCeidg')
-                    pkd = safe_get(full_report, ['fiz_pkd_kod', 'fiz_pkdKod', 'pkd_kod'])
-                    
-                elif typ_jednostki == 'P':
-                    # Raport dla Spółek (KRS)
-                    full_report = gus.get_full_report(regon, 'BIR11OsPrawna')
-                    pkd = safe_get(full_report, ['praw_pkdKod', 'pkdKod'])
+                # Raport specyficzny dla działalności fizycznej
+                raport_ceidg = gus.get_full_report(regon, 'BIR11OsFizycznaDzialalnoscCeidg')
                 
-                # Jeśli udało się pobrać pełny raport, dorzucamy go do debugowania
-                if full_report:
-                    raw_debug['FULL_REPORT_DATA'] = full_report
-                    
-            except Exception as e:
-                raw_debug['FULL_REPORT_ERROR'] = str(e)
-                # Nie wywalamy programu, po prostu PKD zostanie puste
+                # Czasem GUS zwraca listę, jeśli było wiele wpisów. Bierzemy pierwszy (aktualny)
+                if isinstance(raport_ceidg, list) and len(raport_ceidg) > 0:
+                    raport_ceidg = raport_ceidg[0]
+                
+                # Dodajemy do debuga, żebyś widział co przyszło
+                raw_debug['RAPORT_CEIDG_FULL'] = raport_ceidg
 
-        # Budowanie adresu
+                # Szukamy PKD w tym nowym raporcie (klucze specyficzne dla tego raportu)
+                pkd = safe_get(raport_ceidg, [
+                    'fiz_pkd_kod', 
+                    'fiz_pkdKod', 
+                    'fiz_przewazajace_pkd_kod',
+                    'fiz_pkd_nazwa' # czasem kod jest sklejony z nazwą
+                ])
+                
+                # Jeśli to nie zadziałało, próbujemy jeszcze innego raportu (PKD dedykowane)
+                if not pkd:
+                    raport_pkd = gus.get_full_report(regon, 'BIR11OsFizycznaPkd')
+                    if isinstance(raport_pkd, list) and len(raport_pkd) > 0:
+                        # Szukamy tego z przeważającym = tak
+                        for r in raport_pkd:
+                            if r.get('fiz_pkd_przewazajace') == '1' or r.get('fiz_pkdPrzewazajace') == '1':
+                                pkd = safe_get(r, ['fiz_pkd_kod', 'fiz_pkdKod'])
+                                break
+                        # Jak nie znaleziono przeważającego, bierzemy pierwszy
+                        if not pkd:
+                            pkd = safe_get(raport_pkd[0], ['fiz_pkd_kod', 'fiz_pkdKod'])
+                            
+                    raw_debug['RAPORT_PKD_FULL'] = raport_pkd
+
+            except Exception as e:
+                raw_debug['ERROR_FETCHING_REPORT'] = str(e)
+
+        # --- BUDOWANIE ADRESU ---
         adres_full = ""
         if ulica_raw:
             if "ul." in ulica_raw.lower():
@@ -83,9 +97,7 @@ def pobierz_dane_z_gus(nip_input):
         else:
             adres_full = f"{miejscowosc} {nr_domu}"
             
-        if nr_lokalu:
-            adres_full += f"/{nr_lokalu}"
-            
+        if nr_lokalu: adres_full += f"/{nr_lokalu}"
         adres_caly_z_kodem = f"{miejscowosc}, {adres_full}, {kod}"
 
         wynik = {
@@ -118,15 +130,17 @@ with col1:
     
     if st.button("🔍 Pobierz dane z GUS"):
         if len(nip_input) >= 10:
-            with st.spinner('Pobieram dane (w tym ukryte PKD)...'):
+            with st.spinner('Pobieram dane (Deep Search PKD)...'):
                 parsed_data, raw_debug = pobierz_dane_z_gus(nip_input)
                 
                 if parsed_data:
                     st.session_state['gus_data'] = parsed_data
                     st.success("Dane pobrane!")
-                    with st.expander("🕵️ Pokaż co przyszło z GUS (Debug)"):
-                        st.write(parsed_data)
-                        st.json(raw_debug)
+                    
+                    # DEBUGGER - ZOBACZYSZ TU PEŁNY RAPORT JEŚLI PKD NADAL PUSTE
+                    with st.expander("🕵️ Pokaż surowe dane (Debug Raportów)"):
+                        st.write("To co wstawiam do Worda:", parsed_data)
+                        st.write("Surowe dane z GUS:", raw_debug)
                 else:
                     st.error(f"Błąd: {raw_debug}")
         else:
@@ -140,17 +154,16 @@ with col2:
     
     email = st.text_input("Adres e-mail:", value="biuro@elitewaste.pl")
     nazwa_firmy = st.text_input("Nazwa Firmy:", value=dane.get('nazwa', ''))
-    adres_firmy = st.text_input("Adres (Ulica, Kod, Miasto):", value=dane.get('adres_caly', ''))
-    miejscowosc_dok = st.text_input("Miejscowość (nagłówek):", value=dane.get('miejscowosc', ''))
+    adres_firmy = st.text_input("Adres:", value=dane.get('adres_caly', ''))
+    miejscowosc_dok = st.text_input("Miejscowość:", value=dane.get('miejscowosc', ''))
     regon = st.text_input("REGON:", value=dane.get('regon', ''))
-    # Tutaj teraz powinno wskoczyć PKD z pełnego raportu
     pkd = st.text_input("Wiodące PKD:", value=dane.get('pkd', ''))
     data_rozpoczecia = st.text_input("Data rozpoczęcia:", value=dane.get('data_start', ''))
 
 # --- SEKCJA 2 ---
 st.divider()
 st.header("2. Zakres Działalności")
-st.info("ℹ️ Zaznacz tylko TAK. Reszta domyślnie NIE.")
+st.info("ℹ️ Zaznacz tylko TAK.")
 
 t_col1, t_col2 = st.columns(2)
 vars_bdo = {}
