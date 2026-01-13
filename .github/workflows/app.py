@@ -5,55 +5,80 @@ import datetime
 import os
 
 # --- KONFIGURACJA ---
-# Twój klucz API GUS
 API_KEY = 'd75dd615254847b4b9c9'
 
+def safe_get(d, keys, default=''):
+    """
+    Funkcja pomocnicza: szuka wartości pod wieloma różnymi kluczami.
+    Pomaga obsłużyć różnice między JDG a Spółkami.
+    """
+    for k in keys:
+        if d.get(k):
+            return d[k]
+    return default
+
 def pobierz_dane_z_gus(nip_input):
-    """
-    Łączy się z GUS i pobiera dane firmy.
-    """
     try:
         gus = GUS(api_key=API_KEY)
         clean_nip = nip_input.replace('-', '').replace(' ', '').strip()
         
+        # Pobieramy dane
         dane = gus.search(nip=clean_nip)
         
         if not dane:
-            return None
-            
-        # Formatowanie adresu
-        ulica = dane.get('ulica', '')
-        nr_domu = dane.get('nrNieruchomosci', '')
-        nr_lokalu = dane.get('nrLokalu', '')
-        miejscowosc = dane.get('miejscowosc', '')
-        kod = dane.get('kodPocztowy', '')
-        
-        adres_full = f"{ulica} {nr_domu}"
-        if nr_lokalu:
-            adres_full += f"/{nr_lokalu}"
-        
-        adres_caly_z_kodem = f"{miejscowosc}, {adres_full}, {kod}"
-        
-        # Data rozpoczęcia
-        start_date = dane.get('dataRozpoczeciaDzialalnosci') or dane.get('dataPowstania', '')
+            return None, "Brak danych w GUS dla tego NIP."
 
-        return {
-            "nazwa": dane.get('nazwa', ''),
+        # --- DEBUGOWANIE ---
+        # Zwracamy też surowe dane, żebyś mógł je podejrzeć w aplikacji
+        raw_data_preview = dane.copy()
+        
+        # --- PARSOWANIE ADRESU (LOGIKA HYBRYDOWA) ---
+        ulica = safe_get(dane, ['ulica', 'Ulica'])
+        nr_domu = safe_get(dane, ['nrNieruchomosci', 'NrNieruchomosci', 'nr_domu'])
+        nr_lokalu = safe_get(dane, ['nrLokalu', 'NrLokalu'])
+        miejscowosc = safe_get(dane, ['miejscowosc', 'Miejscowosc', 'poczta', 'Poczta'])
+        kod = safe_get(dane, ['kodPocztowy', 'KodPocztowy'])
+        
+        # Budowanie adresu w zależności od tego czy jest ulica (dla wsi vs miast)
+        adres_part = ""
+        if ulica:
+            adres_part = f"ul. {ulica} {nr_domu}"
+        else:
+            adres_part = f"{miejscowosc} {nr_domu}" # Np. "Pcim Dolny 15"
+            
+        if nr_lokalu:
+            adres_part += f"/{nr_lokalu}"
+            
+        adres_caly_z_kodem = f"{miejscowosc}, {adres_part}, {kod}"
+
+        # --- PARSOWANIE DATY (RÓŻNE KLUCZE DLA CEIDG I KRS) ---
+        data_start = safe_get(dane, [
+            'dataRozpoczeciaDzialalnosci', 
+            'dataPowstania', 
+            'dataWpisuDoRejestruEwidencji',
+            'DataPowstania'
+        ])
+
+        # --- PARSOWANIE NAZWY I INNYCH ---
+        wynik = {
+            "nazwa": safe_get(dane, ['nazwa', 'Nazwa']),
             "adres_caly": adres_caly_z_kodem,
             "miejscowosc": miejscowosc,
-            "regon": dane.get('regon', ''),
-            "data_start": start_date,
-            "pkd": dane.get('silos_pkd', {}).get('kod', '') 
+            "regon": safe_get(dane, ['regon', 'Regon']),
+            "data_start": data_start,
+            "pkd": dane.get('silos_pkd', {}).get('kod', '')  # To zazwyczaj działa dobrze
         }
+        
+        return wynik, raw_data_preview
+
     except Exception as e:
-        st.error(f"Błąd połączenia z GUS: {str(e)}")
-        return None
+        return None, str(e)
 
 # --- UI APLIKACJI ---
 st.set_page_config(page_title="Generator BDO - Elite Waste", layout="wide")
 st.title("📄 Generator Oświadczeń BDO (Elite Waste)")
 
-# --- SEKCJA 1: DANE ---
+# --- SEKCJA 1: DANE PODMIOTU ---
 st.header("1. Dane Podmiotu")
 col1, col2 = st.columns(2)
 
@@ -65,13 +90,17 @@ with col1:
     
     if st.button("🔍 Pobierz dane z GUS"):
         if len(nip_input) >= 10:
-            with st.spinner('Pobieram dane...'):
-                wynik = pobierz_dane_z_gus(nip_input)
-                if wynik:
-                    st.session_state['gus_data'] = wynik
+            with st.spinner('Przeszukuję rejestry CEIDG i KRS...'):
+                parsed_data, raw_debug = pobierz_dane_z_gus(nip_input)
+                
+                if parsed_data:
+                    st.session_state['gus_data'] = parsed_data
                     st.success("Dane pobrane!")
+                    # DEBUGGER - POKAŻE CI CO PRZYSZŁO Z GUS
+                    with st.expander("🕵️ Pokaż surowe dane z GUS (Dla weryfikacji)"):
+                        st.json(raw_debug)
                 else:
-                    st.error("Nie znaleziono firmy lub błąd.")
+                    st.error(f"Błąd: {raw_debug}")
         else:
             st.warning("Wpisz poprawny NIP.")
 
@@ -82,6 +111,8 @@ with col2:
     dane = st.session_state['gus_data']
     
     email = st.text_input("Adres e-mail:", value="biuro@elitewaste.pl")
+    
+    # Formularz z danymi (edytowalny)
     nazwa_firmy = st.text_input("Nazwa Firmy:", value=dane.get('nazwa', ''))
     adres_firmy = st.text_input("Adres (Ulica, Kod, Miasto):", value=dane.get('adres_caly', ''))
     miejscowosc_dok = st.text_input("Miejscowość (nagłówek):", value=dane.get('miejscowosc', ''))
@@ -123,7 +154,7 @@ if st.button("🖨️ Generuj Dokument WORD", type="primary"):
     if not nazwa_firmy:
         st.error("Uzupełnij nazwę firmy!")
     else:
-        # Kontekst danych
+        # Context
         context = {
             'miejscowosc': miejscowosc_dok,
             'data': datetime.date.today().strftime("%d.%m.%Y"),
@@ -138,18 +169,14 @@ if st.button("🖨️ Generuj Dokument WORD", type="primary"):
             'data_rozpoczecia': data_rozpoczecia,
         }
         
-        # Logika TAK/NIE
         for key, value in vars_bdo.items():
             context[key] = "TAK" if value else "NIE"
 
         try:
-            # --- FIX ŚCIEŻKI DO PLIKU ---
-            # 1. Pobierz folder, w którym jest ten skrypt
+            # --- FIX ŚCIEŻKI DO PLIKU (ABSOLUTE PATH) ---
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            # 2. Sklej folder z nazwą pliku
             template_path = os.path.join(current_dir, "oswiadczenie.docx")
             
-            # Sprawdzenie debugowe
             if not os.path.exists(template_path):
                 st.error(f"Nie widzę pliku! Szukam tutaj: {template_path}")
                 st.text(f"Pliki w folderze: {os.listdir(current_dir)}")
@@ -158,7 +185,6 @@ if st.button("🖨️ Generuj Dokument WORD", type="primary"):
             doc = DocxTemplate(template_path)
             doc.render(context)
             
-            # Zapis pliku wynikowego
             safe_name = nazwa_firmy.replace('"', '').replace('/', '-').strip()[:20]
             out_filename = f"Oswiadczenie_{safe_name}.docx"
             out_path = os.path.join(current_dir, out_filename)
@@ -172,8 +198,7 @@ if st.button("🖨️ Generuj Dokument WORD", type="primary"):
                     file_name=out_filename,
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
-            
-            st.success(f"Gotowe! Plik wygenerowany dla: {nazwa_firmy}")
+            st.success(f"Gotowe! Plik dla: {nazwa_firmy}")
             
         except Exception as e:
-            st.error(f"Wystąpił błąd: {e}")
+            st.error(f"Błąd generowania: {e}")
